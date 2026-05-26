@@ -21,6 +21,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+import storage
+
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -30,6 +32,20 @@ st.set_page_config(
     page_icon="◐",
     layout="centered",
     initial_sidebar_state="collapsed",
+    menu_items={"About": "Share the Load — a calm space to share the mental load."},
+)
+
+# iOS / mobile web-app meta tags so the page looks polished when added to Home Screen
+st.markdown(
+    """
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="Share the Load">
+    <meta name="theme-color" content="#F7F5F0">
+    <link rel="apple-touch-icon" href="https://api.dicebear.com/7.x/shapes/svg?seed=sharetheload&backgroundColor=7BA098">
+    """,
+    unsafe_allow_html=True,
 )
 
 
@@ -61,7 +77,21 @@ CUSTOM_CSS = f"""
   /* Hide default menu and footer for a cleaner feel */
   #MainMenu, footer {{ visibility: hidden; }}
   /* Reduce top padding */
-  .block-container {{ padding-top: 2.5rem; padding-bottom: 4rem; max-width: 760px; }}
+  .block-container {{ padding-top: 2.5rem; padding-bottom: 5rem; max-width: 760px; }}
+  @media (max-width: 640px) {{
+    .block-container {{ padding-top: 1.2rem; padding-left: 1rem; padding-right: 1rem; padding-bottom: env(safe-area-inset-bottom, 2rem); }}
+    h1 {{ font-size: 1.4rem; }}
+    .hero-headline {{ font-size: 1.3rem; }}
+    .hero-sub {{ font-size: 0.95rem; }}
+    .stat-num {{ font-size: 1.5rem; }}
+  }}
+
+  /* Bigger tap targets on touch devices */
+  @media (pointer: coarse) {{
+    .stButton>button, .stDownloadButton>button {{ min-height: 44px; padding: 0.7rem 1rem; }}
+    .stTextInput input, .stNumberInput input {{ min-height: 44px; }}
+    .stSelectbox div[data-baseweb] {{ min-height: 44px; }}
+  }}
 
   /* Type */
   h1, h2, h3, h4 {{ color: {INK}; font-weight: 500; letter-spacing: -0.01em; }}
@@ -196,8 +226,6 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 # ---------------------------------------------------------------------------
 # Data
 # ---------------------------------------------------------------------------
-DATA_FILE = Path("household_data.json")
-
 DEFAULT_TASKS = [
     # (name, category, points, frequency, invisible?)
     ("Plan weekly meals",                       "Food",        5, "Weekly",   True),
@@ -268,17 +296,24 @@ def seed_default_tasks():
     return [_new_task(*row) for row in DEFAULT_TASKS]
 
 
+def get_household_id() -> str:
+    # query param ?h=... lets a couple share one household by sharing the URL
+    try:
+        qp = st.query_params
+        if "h" in qp and qp["h"]:
+            val = qp["h"]
+            return val if isinstance(val, str) else val[0]
+    except Exception:
+        pass
+    return st.session_state.get("household_id", "default")
+
+
 def load_state_from_disk() -> Optional[dict]:
-    if DATA_FILE.exists():
-        try:
-            return json.loads(DATA_FILE.read_text())
-        except Exception:
-            return None
-    return None
+    return storage.load(get_household_id())
 
 
 def save_state_to_disk(state: dict) -> None:
-    DATA_FILE.write_text(json.dumps(state, indent=2))
+    storage.save(state, get_household_id())
 
 
 # ---------------------------------------------------------------------------
@@ -827,6 +862,30 @@ def render_settings():
             t["active_this_week"] = True
         save_state_to_disk(state)
         st.success("New week started.")
+
+    st.write("")
+    st.markdown("##### Sync")
+    if storage.using_cloud():
+        st.markdown(
+            f"<div class='muted'>✓ Connected to your shared household. "
+            f"Both phones using the same link will see the same data.</div>",
+            unsafe_allow_html=True,
+        )
+        current_hh = get_household_id()
+        new_hh = st.text_input("Household ID", value=current_hh, help="Anyone with the same Household ID sees the same data.")
+        if new_hh != current_hh:
+            st.session_state.household_id = new_hh
+            try:
+                st.query_params["h"] = new_hh
+            except Exception:
+                pass
+            st.rerun()
+    else:
+        st.markdown(
+            "<div class='muted'>Currently saving to this device only. "
+            "Add Supabase keys in your Streamlit secrets to sync between phones — see the README.</div>",
+            unsafe_allow_html=True,
+        )
 
     st.write("")
     st.markdown("##### Data")
