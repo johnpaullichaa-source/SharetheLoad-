@@ -793,7 +793,7 @@ def render_tasks():
         ):
             save_state_to_disk(state)
             st.session_state.saved_snapshot = _snapshot_tasks()
-            st.toast("Saved — your household is up to date.", icon="✓")
+            st.toast("Saved — your household is up to date.")
             st.rerun()
 
 
@@ -1033,7 +1033,7 @@ else:
     with tabs[0]:
         _safe(render_hero, "Home")
     with tabs[1]:
-        render_tasks()
+        _safe(render_tasks, "Tasks")
     with tabs[2]:
         _safe(render_transfer, "Transfer")
     with tabs[3]:
