@@ -351,16 +351,30 @@ def active_df() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _names() -> tuple[str, str]:
+    a = (state.get("partner_a") or "").strip() or "Partner 1"
+    b = (state.get("partner_b") or "").strip() or "Partner 2"
+    if a == b:
+        b = b + " (2)"
+    return a, b
+
+
 def split_points(df: pd.DataFrame) -> dict[str, float]:
-    a, b = state["partner_a"] or "Partner 1", state["partner_b"] or "Partner 2"
-    totals = {a: 0.0, b: 0.0, "Unassigned": 0.0}
+    a, b = _names()
+    totals: dict[str, float] = {a: 0.0, b: 0.0, "Unassigned": 0.0}
+    if df is None or df.empty:
+        return totals
     for _, r in df.iterrows():
-        pts = float(r["points"])
-        if r["owner"] == a:
+        try:
+            pts = float(r["points"])
+        except (TypeError, ValueError):
+            continue
+        owner = r.get("owner", "Unassigned")
+        if owner == a:
             totals[a] += pts
-        elif r["owner"] == b:
+        elif owner == b:
             totals[b] += pts
-        elif r["owner"] == "Shared":
+        elif owner == "Shared":
             totals[a] += pts / 2
             totals[b] += pts / 2
         else:
@@ -369,17 +383,23 @@ def split_points(df: pd.DataFrame) -> dict[str, float]:
 
 
 def invisible_share(df: pd.DataFrame) -> dict[str, float]:
-    a, b = state["partner_a"] or "Partner 1", state["partner_b"] or "Partner 2"
-    inv = {a: 0.0, b: 0.0}
+    a, b = _names()
+    inv: dict[str, float] = {a: 0.0, b: 0.0}
+    if df is None or df.empty:
+        return inv
     for _, r in df.iterrows():
-        if not r["invisible"]:
+        if not r.get("invisible"):
             continue
-        pts = float(r["points"])
-        if r["owner"] == a:
+        try:
+            pts = float(r["points"])
+        except (TypeError, ValueError):
+            continue
+        owner = r.get("owner", "Unassigned")
+        if owner == a:
             inv[a] += pts
-        elif r["owner"] == b:
+        elif owner == b:
             inv[b] += pts
-        elif r["owner"] == "Shared":
+        elif owner == "Shared":
             inv[a] += pts / 2
             inv[b] += pts / 2
     return inv
@@ -387,10 +407,17 @@ def invisible_share(df: pd.DataFrame) -> dict[str, float]:
 
 def biggest_transferable(df: pd.DataFrame, heavier: str) -> Optional[dict]:
     """Highest-points task owned solely by the heavier partner — best candidate to share."""
-    candidates = df[(df["owner"] == heavier)].sort_values("points", ascending=False)
+    if df is None or df.empty:
+        return None
+    candidates = df[df["owner"] == heavier].sort_values("points", ascending=False)
     if candidates.empty:
         return None
-    return candidates.iloc[0].to_dict()
+    row = candidates.iloc[0]
+    return {
+        "name": str(row.get("name", "")),
+        "points": int(row.get("points", 0) or 0),
+        "category": str(row.get("category", "")),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -482,16 +509,18 @@ def _advance():
 # Hero / State of the household
 # ---------------------------------------------------------------------------
 def render_hero():
-    a = state["partner_a"] or "Partner 1"
-    b = state["partner_b"] or "Partner 2"
+    a, b = _names()
 
     df = active_df()
     totals = split_points(df)
     assigned = totals[a] + totals[b]
     unassigned = totals["Unassigned"]
 
-    # Eyebrow
-    week_label = datetime.fromisoformat(state["week_start"]).strftime("Week of %d %B")
+    # Eyebrow — tolerate missing/old week_start
+    try:
+        week_label = datetime.fromisoformat(state.get("week_start") or _week_start_iso()).strftime("Week of %d %B")
+    except Exception:
+        week_label = "This week"
     st.markdown(f'<div class="eyebrow">◐  Share the Load · {week_label}</div>', unsafe_allow_html=True)
 
     # Headline
@@ -615,18 +644,22 @@ def render_hero():
                     unsafe_allow_html=True,
                 )
 
-    # Recent appreciation (one)
-    if state["appreciations"]:
-        latest = state["appreciations"][-1]
-        st.markdown(
-            f"<div class='card-quiet'>"
-            f"<div class='eyebrow'>A recent thank-you</div>"
-            f"<div style='font-size:1rem;margin-top:0.3rem'>"
-            f"<i>&ldquo;{latest['text']}&rdquo;</i></div>"
-            f"<div class='muted' style='margin-top:0.3rem'>{latest['from']} → {latest['to']}</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
+    # Recent appreciation (one) — tolerate older entries missing fields
+    if state.get("appreciations"):
+        latest = state["appreciations"][-1] or {}
+        text = str(latest.get("text", "")).strip()
+        if text:
+            frm = str(latest.get("from", ""))
+            to = str(latest.get("to", ""))
+            st.markdown(
+                f"<div class='card-quiet'>"
+                f"<div class='eyebrow'>A recent thank-you</div>"
+                f"<div style='font-size:1rem;margin-top:0.3rem'>"
+                f"<i>&ldquo;{text}&rdquo;</i></div>"
+                f"<div class='muted' style='margin-top:0.3rem'>{frm} → {to}</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -981,13 +1014,29 @@ if not state.get("onboarded"):
 else:
     # Top-level minimal nav
     tabs = st.tabs(["Home", "Tasks", "Transfer", "Talk", "Settings"])
+
+    def _safe(render_fn, label):
+        try:
+            render_fn()
+        except Exception as e:
+            st.markdown(
+                f"<div class='card-quiet' style='border-color:#E2D5C3'>"
+                f"<div class='eyebrow'>Hmm</div>"
+                f"<div style='margin-top:0.3rem'>Something didn't render quite right on the {label} screen.</div>"
+                f"<div class='muted' style='margin-top:0.3rem'>Try refreshing the page — your data is safe.</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            with st.expander("Technical details"):
+                st.exception(e)
+
     with tabs[0]:
-        render_hero()
+        _safe(render_hero, "Home")
     with tabs[1]:
         render_tasks()
     with tabs[2]:
-        render_transfer()
+        _safe(render_transfer, "Transfer")
     with tabs[3]:
-        render_chat()
+        _safe(render_chat, "Talk")
     with tabs[4]:
-        render_settings()
+        _safe(render_settings, "Settings")
