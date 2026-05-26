@@ -632,6 +632,18 @@ def render_hero():
 # ---------------------------------------------------------------------------
 # Tasks view
 # ---------------------------------------------------------------------------
+def _snapshot_tasks() -> str:
+    """Lightweight signature of current task state so we can detect unsaved edits."""
+    return json.dumps(
+        [
+            (t["id"], t["name"], t["category"], t["points"], t["frequency"],
+             t["invisible"], t["owner"], t.get("active_this_week", True))
+            for t in state["tasks"]
+        ],
+        sort_keys=True,
+    )
+
+
 def render_tasks():
     a = state["partner_a"] or "Partner 1"
     b = state["partner_b"] or "Partner 2"
@@ -639,9 +651,14 @@ def render_tasks():
     st.markdown('<div class="eyebrow">Tasks</div>', unsafe_allow_html=True)
     st.markdown('<div class="hero-headline">What you do, together.</div>', unsafe_allow_html=True)
     st.markdown(
-        f'<div class="hero-sub">Mark who currently does each one. Adjust the weight if a task feels heavier or lighter than the default.</div>',
+        f'<div class="hero-sub">Mark who currently does each one. Adjust the weight if a task feels heavier or lighter than the default. Tap Save changes at the bottom when you\'re done.</div>',
         unsafe_allow_html=True,
     )
+
+    # Track the last-saved task signature in session state so we can show
+    # whether there are unsaved edits.
+    if "saved_snapshot" not in st.session_state:
+        st.session_state.saved_snapshot = _snapshot_tasks()
 
     df = active_df()
     if len(state["tasks"]):
@@ -667,6 +684,7 @@ def render_tasks():
                 if new_name.strip():
                     state["tasks"].append(_new_task(new_name.strip(), new_cat, new_pts, new_freq, new_inv, new_owner))
                     save_state_to_disk(state)
+                    st.session_state.saved_snapshot = _snapshot_tasks()
                     st.rerun()
 
     st.write("")
@@ -707,9 +725,43 @@ def render_tasks():
             if bot[3].button("Remove", key=f"del_{t['id']}"):
                 state["tasks"] = [x for x in state["tasks"] if x["id"] != t["id"]]
                 save_state_to_disk(state)
+                st.session_state.saved_snapshot = _snapshot_tasks()
                 st.rerun()
 
             st.markdown("<hr style='margin:0.4rem 0 0 0;border:none;border-top:1px solid " + BORDER + "'>", unsafe_allow_html=True)
+
+    # ---- Sticky save bar ----
+    has_changes = _snapshot_tasks() != st.session_state.saved_snapshot
+    st.write("")
+    st.markdown(
+        f"<div style='position:sticky;bottom:0;background:{BG};padding:0.8rem 0 0.4rem 0;"
+        f"border-top:1px solid {BORDER};margin-top:1.2rem;z-index:5;'></div>",
+        unsafe_allow_html=True,
+    )
+    sc1, sc2 = st.columns([3, 2])
+    with sc1:
+        if has_changes:
+            st.markdown(
+                f"<div class='muted' style='padding-top:0.5rem'>You have unsaved changes.</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f"<div class='muted' style='padding-top:0.5rem'>All changes saved.</div>",
+                unsafe_allow_html=True,
+            )
+    with sc2:
+        if st.button(
+            "Save changes" if has_changes else "Saved",
+            type="primary",
+            use_container_width=True,
+            disabled=not has_changes,
+            key="save_tasks_btn",
+        ):
+            save_state_to_disk(state)
+            st.session_state.saved_snapshot = _snapshot_tasks()
+            st.toast("Saved — your household is up to date.", icon="✓")
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
