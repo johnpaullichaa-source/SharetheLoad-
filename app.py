@@ -1,145 +1,271 @@
 """
 Share the Load
-A Streamlit app to help couples share the mental load of running a household.
+A calm, minimal Streamlit app that helps couples see and rebalance
+the mental load of running a household.
 
-Features
-- Onboard both partners with their names and a shared household
-- Curated, editable task library (cooking, cleaning, kids, admin, planning, emotional labour)
-- Per-task mental-load points (adjustable) so heavier tasks weigh more
-- Assign tasks to a partner or mark as "Shared"
-- Transfer tasks between partners with a short note (mini communication log)
-- Couple chat / notes section for ongoing communication
-- Dashboard with clear visuals: load split, category breakdown, who owns what
-- Suggestions for rebalancing when the split is uneven
-- Save / load household data as JSON so progress persists between sessions
+Design language
+- Palette: sage + sand on warm off-white, single accent per chart
+- Layout: hero "state of the household" on open, secondary detail behind tabs
+- Tone: gentle, non-judgemental, suggests rather than alerts
 """
 
 from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
 
 # ---------------------------------------------------------------------------
-# Page config and styling
+# Page config
 # ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="Share the Load",
-    page_icon="🤝",
-    layout="wide",
-    initial_sidebar_state="expanded",
+    page_icon="◐",
+    layout="centered",
+    initial_sidebar_state="collapsed",
 )
 
-CUSTOM_CSS = """
+
+# ---------------------------------------------------------------------------
+# Design tokens
+# ---------------------------------------------------------------------------
+BG = "#F7F5F0"
+SURFACE = "#FFFFFF"
+BORDER = "#E8E4DC"
+INK = "#2D3A36"
+MUTED = "#7B8A85"
+SAGE = "#7BA098"        # Partner A
+SAND = "#C8A57A"        # Partner B
+SHARED = "#A8B5A0"
+SOFT = "#EFEBE3"
+SUCCESS = "#6B8E7F"
+WARN = "#C9A961"
+
+CUSTOM_CSS = f"""
 <style>
-    .main-title {
-        font-size: 2.4rem;
-        font-weight: 700;
-        color: #2E4057;
-        margin-bottom: 0.2rem;
-    }
-    .tagline {
-        color: #6c7a89;
-        font-size: 1.05rem;
-        margin-bottom: 1.2rem;
-    }
-    .metric-card {
-        background: linear-gradient(135deg, #f6f9fc 0%, #ffffff 100%);
-        border: 1px solid #e6ecf2;
-        border-radius: 12px;
-        padding: 1rem 1.25rem;
-    }
-    .pill {
-        display: inline-block;
-        padding: 2px 10px;
-        border-radius: 999px;
-        font-size: 0.78rem;
-        margin-right: 4px;
-        background: #eef3f8;
-        color: #2E4057;
-    }
-    .stButton>button {
-        border-radius: 8px;
-    }
+  /* Global */
+  html, body, [class*="css"] {{
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+    color: {INK};
+  }}
+  .stApp {{
+    background: {BG};
+  }}
+  /* Hide default menu and footer for a cleaner feel */
+  #MainMenu, footer {{ visibility: hidden; }}
+  /* Reduce top padding */
+  .block-container {{ padding-top: 2.5rem; padding-bottom: 4rem; max-width: 760px; }}
+
+  /* Type */
+  h1, h2, h3, h4 {{ color: {INK}; font-weight: 500; letter-spacing: -0.01em; }}
+  h1 {{ font-size: 1.6rem; }}
+  h2 {{ font-size: 1.25rem; }}
+  h3 {{ font-size: 1.05rem; }}
+  p, label, span, div {{ color: {INK}; }}
+  .muted {{ color: {MUTED}; font-size: 0.92rem; }}
+  .eyebrow {{
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: 0.72rem;
+    color: {MUTED};
+    margin-bottom: 0.3rem;
+  }}
+  .hero-headline {{
+    font-size: 1.55rem;
+    line-height: 1.35;
+    font-weight: 500;
+    color: {INK};
+    margin: 0.3rem 0 0.6rem 0;
+  }}
+  .hero-sub {{
+    color: {MUTED};
+    font-size: 1rem;
+    margin-bottom: 1.6rem;
+  }}
+
+  /* Card */
+  .card {{
+    background: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 14px;
+    padding: 1.4rem 1.5rem;
+    margin-bottom: 1rem;
+  }}
+  .card-quiet {{
+    background: transparent;
+    border: 1px solid {BORDER};
+    border-radius: 14px;
+    padding: 1.1rem 1.3rem;
+    margin-bottom: 0.8rem;
+  }}
+  .stat-num {{ font-size: 1.9rem; font-weight: 500; color: {INK}; line-height: 1; }}
+  .stat-label {{ font-size: 0.82rem; color: {MUTED}; margin-top: 0.3rem; }}
+
+  /* Pills */
+  .pill {{
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 0.74rem;
+    background: {SOFT};
+    color: {INK};
+    margin-right: 6px;
+  }}
+  .pill-sage  {{ background: #E6EEEB; color: {SAGE}; }}
+  .pill-sand  {{ background: #F1E8D9; color: #8E6E3F; }}
+  .pill-shared {{ background: #ECEFE7; color: {SUCCESS}; }}
+
+  /* Buttons */
+  .stButton>button, .stDownloadButton>button {{
+    background: {SURFACE};
+    border: 1px solid {BORDER};
+    color: {INK};
+    border-radius: 10px;
+    padding: 0.45rem 1rem;
+    font-weight: 500;
+    transition: all 0.15s ease;
+  }}
+  .stButton>button:hover {{
+    border-color: {SAGE};
+    color: {SAGE};
+  }}
+  .stButton>button[kind="primary"] {{
+    background: {INK};
+    color: {BG};
+    border: 1px solid {INK};
+  }}
+  .stButton>button[kind="primary"]:hover {{
+    background: {SAGE};
+    border-color: {SAGE};
+    color: {SURFACE};
+  }}
+
+  /* Inputs */
+  .stTextInput input, .stTextArea textarea, .stNumberInput input, .stSelectbox div[data-baseweb] {{
+    background: {SURFACE} !important;
+    border-radius: 10px !important;
+  }}
+
+  /* Tabs */
+  .stTabs [data-baseweb="tab-list"] {{
+    gap: 0.4rem;
+    border-bottom: 1px solid {BORDER};
+  }}
+  .stTabs [data-baseweb="tab"] {{
+    background: transparent;
+    color: {MUTED};
+    border-radius: 8px 8px 0 0;
+    padding: 0.4rem 0.8rem;
+    font-size: 0.92rem;
+  }}
+  .stTabs [aria-selected="true"] {{
+    color: {INK};
+    border-bottom: 2px solid {SAGE} !important;
+  }}
+
+  /* Dividers */
+  hr {{ border-color: {BORDER}; }}
+
+  /* Chat */
+  [data-testid="stChatMessage"] {{
+    background: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 12px;
+  }}
+
+  /* Hide labels visually-only where we use label_visibility=collapsed */
+  .row-task {{
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+    padding: 0.6rem 0;
+    border-bottom: 1px solid {BORDER};
+  }}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
-# Data model
+# Data
 # ---------------------------------------------------------------------------
 DATA_FILE = Path("household_data.json")
 
 DEFAULT_TASKS = [
-    # (name, category, points, default frequency text)
-    ("Plan weekly meals", "Cooking & Food", 5, "Weekly"),
-    ("Grocery shopping", "Cooking & Food", 4, "Weekly"),
-    ("Cooking dinner", "Cooking & Food", 4, "Daily"),
-    ("Packing school/work lunches", "Cooking & Food", 3, "Daily"),
-    ("Doing the dishes", "Cleaning", 2, "Daily"),
-    ("Laundry (wash/dry/fold)", "Cleaning", 4, "Weekly"),
-    ("Vacuuming & mopping", "Cleaning", 3, "Weekly"),
-    ("Cleaning bathrooms", "Cleaning", 3, "Weekly"),
-    ("Tidying common areas", "Cleaning", 2, "Daily"),
-    ("Taking out rubbish/recycling", "Cleaning", 1, "Weekly"),
-    ("School drop-off / pick-up", "Kids", 4, "Daily"),
-    ("Helping with homework", "Kids", 3, "Daily"),
-    ("Bath & bedtime routine", "Kids", 4, "Daily"),
-    ("Organising playdates / activities", "Kids", 3, "Weekly"),
-    ("Tracking school events & permission slips", "Kids", 4, "Weekly"),
-    ("Paying bills", "Admin & Finance", 4, "Monthly"),
-    ("Budgeting & expense tracking", "Admin & Finance", 5, "Monthly"),
-    ("Booking medical / dental appointments", "Admin & Finance", 4, "As needed"),
-    ("Car servicing / rego / insurance", "Admin & Finance", 3, "As needed"),
-    ("Buying birthday gifts (family & friends)", "Planning & Social", 4, "Monthly"),
-    ("Planning holidays / trips", "Planning & Social", 5, "As needed"),
-    ("Remembering birthdays & anniversaries", "Planning & Social", 4, "Ongoing"),
-    ("Organising family calendar", "Planning & Social", 5, "Weekly"),
-    ("Checking in emotionally with partner", "Emotional Labour", 5, "Daily"),
-    ("Mediating arguments / supporting kids", "Emotional Labour", 5, "As needed"),
-    ("Staying on top of household to-dos", "Emotional Labour", 5, "Ongoing"),
-    ("Garden / yard maintenance", "Home Maintenance", 3, "Weekly"),
-    ("Minor repairs & DIY", "Home Maintenance", 3, "As needed"),
-    ("Pet care (food/vet/walks)", "Home Maintenance", 3, "Daily"),
+    # (name, category, points, frequency, invisible?)
+    ("Plan weekly meals",                       "Food",        5, "Weekly",   True),
+    ("Grocery shopping",                        "Food",        4, "Weekly",   False),
+    ("Cooking dinner",                          "Food",        4, "Daily",    False),
+    ("Packing lunches",                         "Food",        3, "Daily",    False),
+    ("Dishes",                                  "Home",        2, "Daily",    False),
+    ("Laundry",                                 "Home",        4, "Weekly",   False),
+    ("Vacuuming & mopping",                     "Home",        3, "Weekly",   False),
+    ("Cleaning bathrooms",                      "Home",        3, "Weekly",   False),
+    ("Tidying common areas",                    "Home",        2, "Daily",    False),
+    ("Taking out rubbish",                      "Home",        1, "Weekly",   False),
+    ("School drop-off / pick-up",               "Kids",        4, "Daily",    False),
+    ("Helping with homework",                   "Kids",        3, "Daily",    False),
+    ("Bath & bedtime routine",                  "Kids",        4, "Daily",    False),
+    ("Tracking school events",                  "Kids",        4, "Weekly",   True),
+    ("Organising playdates / activities",       "Kids",        3, "Weekly",   True),
+    ("Paying bills",                            "Admin",       4, "Monthly",  True),
+    ("Budgeting & expense tracking",            "Admin",       5, "Monthly",  True),
+    ("Booking appointments",                    "Admin",       4, "As needed", True),
+    ("Car servicing / rego",                    "Admin",       3, "As needed", True),
+    ("Buying gifts (family & friends)",         "Planning",    4, "Monthly",  True),
+    ("Planning holidays",                       "Planning",    5, "As needed", True),
+    ("Remembering birthdays",                   "Planning",    4, "Ongoing",  True),
+    ("Family calendar",                         "Planning",    5, "Weekly",   True),
+    ("Emotional check-ins",                     "Emotional",   5, "Daily",    True),
+    ("Supporting kids' moods",                  "Emotional",   5, "As needed", True),
+    ("Holding the mental to-do list",           "Emotional",   5, "Ongoing",  True),
+    ("Garden / yard",                           "Home",        3, "Weekly",   False),
+    ("Repairs & DIY",                           "Home",        3, "As needed", False),
+    ("Pet care",                                "Home",        3, "Daily",    False),
 ]
 
 
 def _empty_state() -> dict:
     return {
-        "partner_a": "Partner A",
-        "partner_b": "Partner B",
-        "tasks": [],  # list of task dicts
-        "messages": [],  # chat / note log
-        "transfers": [],  # transfer history
+        "partner_a": "",
+        "partner_b": "",
+        "tasks": [],
+        "messages": [],
+        "transfers": [],
+        "appreciations": [],
+        "onboarded": False,
+        "week_start": _week_start_iso(),
         "created_at": datetime.utcnow().isoformat(),
     }
 
 
-def _new_task(name: str, category: str, points: int, frequency: str, owner: str = "Unassigned") -> dict:
+def _week_start_iso() -> str:
+    today = date.today()
+    return (today - timedelta(days=today.weekday())).isoformat()
+
+
+def _new_task(name, category, points, frequency, invisible=False, owner="Unassigned"):
     return {
         "id": str(uuid.uuid4()),
         "name": name,
         "category": category,
         "points": int(points),
         "frequency": frequency,
-        "owner": owner,  # one of partner_a name, partner_b name, "Shared", "Unassigned"
-        "notes": "",
-        "created_at": datetime.utcnow().isoformat(),
+        "invisible": invisible,
+        "owner": owner,
+        "active_this_week": True,
     }
 
 
-def seed_default_tasks() -> list[dict]:
-    return [_new_task(n, c, p, f) for n, c, p, f in DEFAULT_TASKS]
+def seed_default_tasks():
+    return [_new_task(*row) for row in DEFAULT_TASKS]
 
 
 def load_state_from_disk() -> Optional[dict]:
@@ -156,100 +282,50 @@ def save_state_to_disk(state: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Session state init
+# Session state
 # ---------------------------------------------------------------------------
 if "state" not in st.session_state:
     persisted = load_state_from_disk()
     if persisted:
         st.session_state.state = persisted
     else:
-        st.session_state.state = _empty_state()
-        st.session_state.state["tasks"] = seed_default_tasks()
+        s = _empty_state()
+        s["tasks"] = seed_default_tasks()
+        st.session_state.state = s
 
 state = st.session_state.state
+# Backfill any new fields on older saves
+for key, default in _empty_state().items():
+    state.setdefault(key, default)
+for t in state["tasks"]:
+    t.setdefault("invisible", False)
+    t.setdefault("active_this_week", True)
 
 
 def owner_options() -> list[str]:
-    return [state["partner_a"], state["partner_b"], "Shared", "Unassigned"]
+    return [state["partner_a"] or "Partner 1", state["partner_b"] or "Partner 2", "Shared", "Unassigned"]
 
 
 # ---------------------------------------------------------------------------
-# Header
+# Analytics helpers
 # ---------------------------------------------------------------------------
-st.markdown('<div class="main-title">🤝 Share the Load</div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="tagline">A friendlier way for couples to see, share, and rebalance the mental load of running a household.</div>',
-    unsafe_allow_html=True,
-)
+def active_df() -> pd.DataFrame:
+    rows = [t for t in state["tasks"] if t.get("active_this_week", True)]
+    if not rows:
+        return pd.DataFrame(columns=["id", "name", "category", "points", "frequency", "invisible", "owner", "active_this_week"])
+    return pd.DataFrame(rows)
 
 
-# ---------------------------------------------------------------------------
-# Sidebar: couple setup & data controls
-# ---------------------------------------------------------------------------
-with st.sidebar:
-    st.header("👥 Your household")
-    state["partner_a"] = st.text_input("Partner 1 name", value=state["partner_a"])
-    state["partner_b"] = st.text_input("Partner 2 name", value=state["partner_b"])
-
-    st.divider()
-    st.subheader("💾 Data")
-    col_s, col_l = st.columns(2)
-    with col_s:
-        if st.button("Save", use_container_width=True):
-            save_state_to_disk(state)
-            st.success("Saved")
-    with col_l:
-        if st.button("Reload", use_container_width=True):
-            persisted = load_state_from_disk()
-            if persisted:
-                st.session_state.state = persisted
-                st.rerun()
-            else:
-                st.info("Nothing saved yet")
-
-    st.download_button(
-        "⬇️ Download data (JSON)",
-        data=json.dumps(state, indent=2),
-        file_name="sharetheload_data.json",
-        mime="application/json",
-        use_container_width=True,
-    )
-    uploaded = st.file_uploader("⬆️ Upload data (JSON)", type=["json"])
-    if uploaded is not None:
-        try:
-            st.session_state.state = json.loads(uploaded.read().decode("utf-8"))
-            st.success("Imported — refresh to view")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Could not import: {e}")
-
-    st.divider()
-    if st.button("♻️ Reset everything", use_container_width=True):
-        st.session_state.state = _empty_state()
-        st.session_state.state["tasks"] = seed_default_tasks()
-        st.rerun()
-
-
-# ---------------------------------------------------------------------------
-# Helpers for analytics
-# ---------------------------------------------------------------------------
-def tasks_df() -> pd.DataFrame:
-    if not state["tasks"]:
-        return pd.DataFrame(columns=["id", "name", "category", "points", "frequency", "owner", "notes"])
-    return pd.DataFrame(state["tasks"])
-
-
-def points_by_owner(df: pd.DataFrame) -> dict[str, float]:
-    """Split points; shared tasks count half to each partner."""
-    a, b = state["partner_a"], state["partner_b"]
+def split_points(df: pd.DataFrame) -> dict[str, float]:
+    a, b = state["partner_a"] or "Partner 1", state["partner_b"] or "Partner 2"
     totals = {a: 0.0, b: 0.0, "Unassigned": 0.0}
-    for _, row in df.iterrows():
-        pts = float(row["points"])
-        if row["owner"] == a:
+    for _, r in df.iterrows():
+        pts = float(r["points"])
+        if r["owner"] == a:
             totals[a] += pts
-        elif row["owner"] == b:
+        elif r["owner"] == b:
             totals[b] += pts
-        elif row["owner"] == "Shared":
+        elif r["owner"] == "Shared":
             totals[a] += pts / 2
             totals[b] += pts / 2
         else:
@@ -257,300 +333,550 @@ def points_by_owner(df: pd.DataFrame) -> dict[str, float]:
     return totals
 
 
-# ---------------------------------------------------------------------------
-# Tabs
-# ---------------------------------------------------------------------------
-tab_dashboard, tab_tasks, tab_transfer, tab_chat, tab_tips = st.tabs(
-    ["📊 Dashboard", "📝 Tasks", "🔄 Transfer", "💬 Chat & Notes", "💡 Tips"]
-)
+def invisible_share(df: pd.DataFrame) -> dict[str, float]:
+    a, b = state["partner_a"] or "Partner 1", state["partner_b"] or "Partner 2"
+    inv = {a: 0.0, b: 0.0}
+    for _, r in df.iterrows():
+        if not r["invisible"]:
+            continue
+        pts = float(r["points"])
+        if r["owner"] == a:
+            inv[a] += pts
+        elif r["owner"] == b:
+            inv[b] += pts
+        elif r["owner"] == "Shared":
+            inv[a] += pts / 2
+            inv[b] += pts / 2
+    return inv
+
+
+def biggest_transferable(df: pd.DataFrame, heavier: str) -> Optional[dict]:
+    """Highest-points task owned solely by the heavier partner — best candidate to share."""
+    candidates = df[(df["owner"] == heavier)].sort_values("points", ascending=False)
+    if candidates.empty:
+        return None
+    return candidates.iloc[0].to_dict()
 
 
 # ---------------------------------------------------------------------------
-# Dashboard tab
+# Onboarding
 # ---------------------------------------------------------------------------
-with tab_dashboard:
-    df = tasks_df()
-    a, b = state["partner_a"], state["partner_b"]
-
-    if df.empty:
-        st.info("No tasks yet — head over to the Tasks tab to add some.")
-    else:
-        totals = points_by_owner(df)
-        total_load = sum(totals.values()) or 1.0
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total tasks", len(df))
-        c2.metric(f"{a}'s load", f"{totals[a]:.1f} pts", f"{totals[a]/total_load*100:.0f}%")
-        c3.metric(f"{b}'s load", f"{totals[b]:.1f} pts", f"{totals[b]/total_load*100:.0f}%")
-        c4.metric("Unassigned", f"{totals['Unassigned']:.1f} pts")
-
-        st.divider()
-
-        left, right = st.columns([1, 1])
-
-        # Split donut
-        with left:
-            st.subheader("Mental load split")
-            assigned_total = totals[a] + totals[b]
-            if assigned_total == 0:
-                st.info("Assign some tasks to see the split.")
-            else:
-                pie_df = pd.DataFrame(
-                    {"Partner": [a, b], "Points": [totals[a], totals[b]]}
-                )
-                fig = px.pie(
-                    pie_df,
-                    names="Partner",
-                    values="Points",
-                    hole=0.55,
-                    color="Partner",
-                    color_discrete_map={a: "#4C9AFF", b: "#FF8B94"},
-                )
-                fig.update_traces(textinfo="percent+label")
-                fig.update_layout(showlegend=True, height=380, margin=dict(t=10, b=10, l=10, r=10))
-                st.plotly_chart(fig, use_container_width=True)
-
-                # Balance bar / fairness indicator
-                share_a = totals[a] / assigned_total * 100
-                share_b = totals[b] / assigned_total * 100
-                gap = abs(share_a - share_b)
-                if gap <= 10:
-                    st.success(f"Great balance — only a {gap:.0f}% gap.")
-                elif gap <= 25:
-                    st.warning(f"A bit uneven — {gap:.0f}% gap. Consider rebalancing a few tasks.")
-                else:
-                    st.error(f"Big imbalance — {gap:.0f}% gap. The Transfer tab can help share the load.")
-
-        # Category breakdown
-        with right:
-            st.subheader("By category")
-            cat_rows = []
-            for _, row in df.iterrows():
-                pts = float(row["points"])
-                if row["owner"] == a:
-                    cat_rows.append({"Category": row["category"], "Partner": a, "Points": pts})
-                elif row["owner"] == b:
-                    cat_rows.append({"Category": row["category"], "Partner": b, "Points": pts})
-                elif row["owner"] == "Shared":
-                    cat_rows.append({"Category": row["category"], "Partner": a, "Points": pts / 2})
-                    cat_rows.append({"Category": row["category"], "Partner": b, "Points": pts / 2})
-                else:
-                    cat_rows.append({"Category": row["category"], "Partner": "Unassigned", "Points": pts})
-            cat_df = pd.DataFrame(cat_rows)
-            if cat_df.empty:
-                st.info("No data yet.")
-            else:
-                fig2 = px.bar(
-                    cat_df.groupby(["Category", "Partner"], as_index=False)["Points"].sum(),
-                    x="Category",
-                    y="Points",
-                    color="Partner",
-                    barmode="stack",
-                    color_discrete_map={a: "#4C9AFF", b: "#FF8B94", "Unassigned": "#B0BEC5"},
-                )
-                fig2.update_layout(height=380, margin=dict(t=10, b=10, l=10, r=10), xaxis_tickangle=-25)
-                st.plotly_chart(fig2, use_container_width=True)
-
-        st.divider()
-        st.subheader("Who owns what")
-        view = df.copy()
-        view = view[["name", "category", "points", "frequency", "owner"]]
-        view.columns = ["Task", "Category", "Points", "Frequency", "Owner"]
-        st.dataframe(view, use_container_width=True, hide_index=True)
-
-
-# ---------------------------------------------------------------------------
-# Tasks tab
-# ---------------------------------------------------------------------------
-with tab_tasks:
-    st.subheader("Manage your tasks")
-    st.caption(
-        "Tick the tasks you currently do, adjust points so heavier tasks weigh more, "
-        "and assign each to a partner or mark as Shared."
+def render_onboarding():
+    st.markdown('<div class="eyebrow">Welcome</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero-headline">Let\'s set up your household.</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="hero-sub">This takes about two minutes. Your data stays on this device — nothing is uploaded.</div>',
+        unsafe_allow_html=True,
     )
 
-    # Add new task
-    with st.expander("➕ Add a custom task"):
-        with st.form("add_task_form", clear_on_submit=True):
-            cols = st.columns([3, 2, 1, 2, 2])
-            new_name = cols[0].text_input("Task name")
-            categories = sorted({t["category"] for t in state["tasks"]} | {"Custom"})
-            new_cat = cols[1].selectbox("Category", categories)
-            new_pts = cols[2].number_input("Points", min_value=1, max_value=10, value=3)
-            new_freq = cols[3].selectbox(
-                "Frequency", ["Daily", "Weekly", "Monthly", "As needed", "Ongoing"]
-            )
-            new_owner = cols[4].selectbox("Owner", owner_options())
-            submitted = st.form_submit_button("Add task", use_container_width=True)
-            if submitted and new_name.strip():
-                state["tasks"].append(
-                    _new_task(new_name.strip(), new_cat, int(new_pts), new_freq, new_owner)
-                )
-                st.success(f"Added '{new_name}'")
+    step = st.session_state.get("onboard_step", 1)
+
+    if step == 1:
+        with st.container():
+            st.markdown("##### Your names")
+            c1, c2 = st.columns(2)
+            state["partner_a"] = c1.text_input("Partner 1", value=state["partner_a"], placeholder="e.g. Alex")
+            state["partner_b"] = c2.text_input("Partner 2", value=state["partner_b"], placeholder="e.g. Sam")
+            st.write("")
+            if st.button("Continue", type="primary", use_container_width=True,
+                         disabled=not (state["partner_a"].strip() and state["partner_b"].strip())):
+                st.session_state.onboard_step = 2
                 st.rerun()
 
-    # Filter
-    df = tasks_df()
-    if not df.empty:
-        cats = ["All"] + sorted(df["category"].unique().tolist())
-        owners = ["All"] + owner_options()
-        fc1, fc2, fc3 = st.columns([2, 2, 4])
-        cat_filter = fc1.selectbox("Filter by category", cats)
-        owner_filter = fc2.selectbox("Filter by owner", owners)
-        search = fc3.text_input("Search", placeholder="Search task names...")
+    elif step == 2:
+        a, b = state["partner_a"], state["partner_b"]
+        st.markdown("##### Who currently does what?")
+        st.markdown(
+            f'<div class="muted">Tap through the list — pick {a}, {b}, Shared, or Skip. '
+            "You can adjust everything later.</div>",
+            unsafe_allow_html=True,
+        )
+        st.write("")
 
-        filtered_ids = []
-        for t in state["tasks"]:
-            if cat_filter != "All" and t["category"] != cat_filter:
-                continue
-            if owner_filter != "All" and t["owner"] != owner_filter:
-                continue
-            if search and search.lower() not in t["name"].lower():
-                continue
-            filtered_ids.append(t["id"])
+        idx = st.session_state.get("onboard_task_idx", 0)
+        if idx >= len(state["tasks"]):
+            st.session_state.onboard_step = 3
+            st.rerun()
 
-        st.write(f"Showing {len(filtered_ids)} of {len(state['tasks'])} tasks")
+        t = state["tasks"][idx]
+        st.markdown(
+            f"<div class='card'>"
+            f"<div class='muted'>Task {idx+1} of {len(state['tasks'])} · {t['category']}</div>"
+            f"<div style='font-size:1.2rem; margin:0.4rem 0 0.2rem 0;'>{t['name']}</div>"
+            f"<div class='muted'>{t['frequency']} · weight {t['points']}"
+            + (" · invisible work" if t['invisible'] else "")
+            + "</div></div>",
+            unsafe_allow_html=True,
+        )
 
-        # Edit each task inline
-        for t in state["tasks"]:
-            if t["id"] not in filtered_ids:
-                continue
-            with st.container(border=True):
-                cols = st.columns([3, 2, 1, 2, 2, 1])
-                t["name"] = cols[0].text_input("Task", value=t["name"], key=f"name_{t['id']}", label_visibility="collapsed")
-                t["category"] = cols[1].text_input("Category", value=t["category"], key=f"cat_{t['id']}", label_visibility="collapsed")
-                t["points"] = cols[2].number_input(
-                    "Pts", min_value=1, max_value=10, value=int(t["points"]),
-                    key=f"pts_{t['id']}", label_visibility="collapsed",
-                )
-                t["frequency"] = cols[3].selectbox(
-                    "Frequency",
-                    ["Daily", "Weekly", "Monthly", "As needed", "Ongoing"],
-                    index=["Daily", "Weekly", "Monthly", "As needed", "Ongoing"].index(t["frequency"])
-                    if t["frequency"] in ["Daily", "Weekly", "Monthly", "As needed", "Ongoing"] else 0,
-                    key=f"freq_{t['id']}", label_visibility="collapsed",
-                )
-                opts = owner_options()
-                t["owner"] = cols[4].selectbox(
-                    "Owner",
-                    opts,
-                    index=opts.index(t["owner"]) if t["owner"] in opts else len(opts) - 1,
-                    key=f"own_{t['id']}", label_visibility="collapsed",
-                )
-                if cols[5].button("🗑️", key=f"del_{t['id']}", help="Delete"):
-                    state["tasks"] = [x for x in state["tasks"] if x["id"] != t["id"]]
-                    st.rerun()
-    else:
-        st.info("No tasks yet. Add a custom one above or reset to load the default list.")
+        c1, c2, c3, c4 = st.columns(4)
+        if c1.button(a, use_container_width=True, key=f"ob_a_{idx}"):
+            t["owner"] = a; _advance()
+        if c2.button(b, use_container_width=True, key=f"ob_b_{idx}"):
+            t["owner"] = b; _advance()
+        if c3.button("Shared", use_container_width=True, key=f"ob_s_{idx}"):
+            t["owner"] = "Shared"; _advance()
+        if c4.button("Skip", use_container_width=True, key=f"ob_sk_{idx}"):
+            t["active_this_week"] = False
+            t["owner"] = "Unassigned"; _advance()
+
+        st.write("")
+        st.markdown(f"<div class='muted' style='text-align:center'>Progress: {idx}/{len(state['tasks'])}</div>", unsafe_allow_html=True)
+        if st.button("Finish setup now", use_container_width=True):
+            st.session_state.onboard_step = 3
+            st.rerun()
+
+    elif step == 3:
+        st.markdown('<div class="hero-headline">You\'re all set.</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="hero-sub">Open the dashboard to see the state of your household.</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("See our household", type="primary", use_container_width=True):
+            state["onboarded"] = True
+            save_state_to_disk(state)
+            st.rerun()
+
+
+def _advance():
+    st.session_state.onboard_task_idx = st.session_state.get("onboard_task_idx", 0) + 1
+    st.rerun()
 
 
 # ---------------------------------------------------------------------------
-# Transfer tab
+# Hero / State of the household
 # ---------------------------------------------------------------------------
-with tab_transfer:
-    st.subheader("Transfer a task")
-    st.caption("Hand a task over to your partner and leave a short message so you're on the same page.")
+def render_hero():
+    a = state["partner_a"] or "Partner 1"
+    b = state["partner_b"] or "Partner 2"
 
-    a, b = state["partner_a"], state["partner_b"]
-    df = tasks_df()
-    if df.empty:
-        st.info("Add some tasks first.")
+    df = active_df()
+    totals = split_points(df)
+    assigned = totals[a] + totals[b]
+    unassigned = totals["Unassigned"]
+
+    # Eyebrow
+    week_label = datetime.fromisoformat(state["week_start"]).strftime("Week of %d %B")
+    st.markdown(f'<div class="eyebrow">◐  Share the Load · {week_label}</div>', unsafe_allow_html=True)
+
+    # Headline
+    if assigned == 0:
+        headline = f"Hi {a} and {b} — let's see your household."
+        sub = "Assign a few tasks to start seeing your balance."
     else:
-        with st.form("transfer_form", clear_on_submit=True):
-            task_map = {f"{t['name']}  (owner: {t['owner']})": t["id"] for t in state["tasks"]}
-            chosen = st.selectbox("Which task?", list(task_map.keys()))
-            new_owner = st.selectbox("Transfer to", owner_options())
-            message = st.text_area("Message to your partner (optional)", placeholder="e.g. Could you take this for the next two weeks? I'm slammed at work.")
-            confirmed = st.form_submit_button("Transfer task", use_container_width=True)
-            if confirmed:
-                task_id = task_map[chosen]
-                old_owner = None
-                for t in state["tasks"]:
-                    if t["id"] == task_id:
-                        old_owner = t["owner"]
-                        t["owner"] = new_owner
-                        break
-                state["transfers"].append(
-                    {
-                        "task": chosen.split("  (owner")[0],
-                        "from": old_owner,
-                        "to": new_owner,
-                        "message": message,
-                        "at": datetime.utcnow().isoformat(),
-                    }
-                )
-                if message.strip():
-                    state["messages"].append(
-                        {
-                            "author": "Transfer",
-                            "text": f"📦 Transferred '{chosen.split('  (owner')[0]}' from {old_owner} → {new_owner}. Note: {message}",
-                            "at": datetime.utcnow().isoformat(),
-                        }
-                    )
-                st.success(f"Transferred to {new_owner}")
-
-        st.divider()
-        st.subheader("Recent transfers")
-        if not state["transfers"]:
-            st.caption("No transfers yet.")
+        share_a = totals[a] / assigned * 100
+        share_b = totals[b] / assigned * 100
+        gap = abs(share_a - share_b)
+        heavier = a if totals[a] > totals[b] else b
+        if gap <= 10:
+            headline = "Your household feels balanced."
+            sub = f"You're sharing the load almost evenly this week. Nicely done."
+        elif gap <= 25:
+            headline = f"Things are leaning toward {heavier}."
+            sub = f"A small rebalance could even things out — there's a suggestion below."
         else:
-            for tr in reversed(state["transfers"][-10:]):
-                ts = datetime.fromisoformat(tr["at"]).strftime("%d %b %Y · %H:%M")
+            headline = f"{heavier} is carrying more this week."
+            sub = "Worth a short conversation. A starting point is suggested below."
+
+    st.markdown(f'<div class="hero-headline">{headline}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="hero-sub">{sub}</div>', unsafe_allow_html=True)
+
+    # Balance visual — single donut, calm palette
+    if assigned > 0:
+        fig = go.Figure(
+            data=[
+                go.Pie(
+                    labels=[a, b],
+                    values=[totals[a], totals[b]],
+                    hole=0.72,
+                    marker=dict(colors=[SAGE, SAND], line=dict(color=BG, width=4)),
+                    textinfo="none",
+                    hoverinfo="label+percent",
+                    sort=False,
+                )
+            ]
+        )
+        share_a_pct = totals[a] / assigned * 100
+        fig.update_layout(
+            showlegend=False,
+            height=260,
+            margin=dict(t=0, b=0, l=0, r=0),
+            paper_bgcolor=BG,
+            annotations=[
+                dict(
+                    text=f"<span style='font-size:28px;color:{INK}'>{share_a_pct:.0f} / {100-share_a_pct:.0f}</span><br>"
+                         f"<span style='font-size:11px;color:{MUTED};letter-spacing:1px'>BALANCE</span>",
+                    x=0.5, y=0.5, showarrow=False,
+                )
+            ],
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        # Partner labels under donut
+        c1, c2 = st.columns(2)
+        c1.markdown(
+            f"<div style='text-align:center'>"
+            f"<span style='display:inline-block;width:10px;height:10px;background:{SAGE};border-radius:2px;margin-right:8px;vertical-align:middle'></span>"
+            f"<span style='color:{INK}'>{a}</span><br>"
+            f"<span class='muted'>{totals[a]:.0f} pts</span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        c2.markdown(
+            f"<div style='text-align:center'>"
+            f"<span style='display:inline-block;width:10px;height:10px;background:{SAND};border-radius:2px;margin-right:8px;vertical-align:middle'></span>"
+            f"<span style='color:{INK}'>{b}</span><br>"
+            f"<span class='muted'>{totals[b]:.0f} pts</span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.write("")
+    st.write("")
+
+    # Three quiet stats
+    inv = invisible_share(df)
+    inv_total = inv[a] + inv[b]
+    inv_pct = (inv_total / assigned * 100) if assigned else 0
+
+    s1, s2, s3 = st.columns(3)
+    with s1:
+        st.markdown(
+            f"<div class='card-quiet'><div class='stat-num'>{int(assigned)}</div>"
+            f"<div class='stat-label'>Total load points this week</div></div>",
+            unsafe_allow_html=True,
+        )
+    with s2:
+        st.markdown(
+            f"<div class='card-quiet'><div class='stat-num'>{inv_pct:.0f}%</div>"
+            f"<div class='stat-label'>Is invisible work</div></div>",
+            unsafe_allow_html=True,
+        )
+    with s3:
+        st.markdown(
+            f"<div class='card-quiet'><div class='stat-num'>{int(unassigned)}</div>"
+            f"<div class='stat-label'>Unassigned points</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    # Suggested next step — only when meaningful
+    if assigned > 0:
+        share_a = totals[a] / assigned * 100
+        share_b = totals[b] / assigned * 100
+        gap = abs(share_a - share_b)
+        if gap > 15:
+            heavier = a if totals[a] > totals[b] else b
+            lighter = b if heavier == a else a
+            candidate = biggest_transferable(df, heavier)
+            if candidate is not None:
                 st.markdown(
-                    f"- **{tr['task']}** — {tr['from']} → {tr['to']}  "
-                    f"<span class='pill'>{ts}</span>  "
-                    + (f"<br>💬 _{tr['message']}_" if tr["message"] else ""),
+                    f"<div class='card'>"
+                    f"<div class='eyebrow'>A small suggestion</div>"
+                    f"<div style='font-size:1.05rem;margin-bottom:0.4rem'>"
+                    f"Consider sharing <b>{candidate['name']}</b> with {lighter}.</div>"
+                    f"<div class='muted'>It's currently the heaviest task on {heavier}'s plate "
+                    f"({int(candidate['points'])} pts). Even moving it to Shared would noticeably ease the balance.</div>"
+                    f"</div>",
                     unsafe_allow_html=True,
                 )
 
+    # Recent appreciation (one)
+    if state["appreciations"]:
+        latest = state["appreciations"][-1]
+        st.markdown(
+            f"<div class='card-quiet'>"
+            f"<div class='eyebrow'>A recent thank-you</div>"
+            f"<div style='font-size:1rem;margin-top:0.3rem'>"
+            f"<i>&ldquo;{latest['text']}&rdquo;</i></div>"
+            f"<div class='muted' style='margin-top:0.3rem'>{latest['from']} → {latest['to']}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
 
 # ---------------------------------------------------------------------------
-# Chat & Notes tab
+# Tasks view
 # ---------------------------------------------------------------------------
-with tab_chat:
-    st.subheader("Couple chat & notes")
-    st.caption("A simple shared space for quick check-ins about the household.")
+def render_tasks():
+    a = state["partner_a"] or "Partner 1"
+    b = state["partner_b"] or "Partner 2"
 
-    a, b = state["partner_a"], state["partner_b"]
-    with st.form("chat_form", clear_on_submit=True):
-        author = st.selectbox("From", [a, b])
-        text = st.text_area("Message", placeholder="Anything you want to flag, appreciate, or plan together...")
-        submitted = st.form_submit_button("Send", use_container_width=True)
-        if submitted and text.strip():
-            state["messages"].append(
-                {"author": author, "text": text.strip(), "at": datetime.utcnow().isoformat()}
-            )
-            st.rerun()
+    st.markdown('<div class="eyebrow">Tasks</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero-headline">What you do, together.</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="hero-sub">Mark who currently does each one. Adjust the weight if a task feels heavier or lighter than the default.</div>',
+        unsafe_allow_html=True,
+    )
 
-    if not state["messages"]:
-        st.info("No messages yet — start the conversation.")
+    df = active_df()
+    if len(state["tasks"]):
+        cats = sorted({t["category"] for t in state["tasks"]})
+        c1, c2 = st.columns([2, 3])
+        cat_filter = c1.selectbox("Category", ["All"] + cats, label_visibility="collapsed")
+        search = c2.text_input("Search", placeholder="Search tasks…", label_visibility="collapsed")
     else:
-        for m in reversed(state["messages"][-50:]):
+        cat_filter, search = "All", ""
+
+    # Add task
+    with st.expander("Add a task"):
+        with st.form("add", clear_on_submit=True):
+            c1, c2 = st.columns([3, 2])
+            new_name = c1.text_input("Name")
+            new_cat = c2.text_input("Category", value="Custom")
+            c3, c4, c5 = st.columns(3)
+            new_pts = c3.number_input("Weight", 1, 10, 3)
+            new_freq = c4.selectbox("Frequency", ["Daily", "Weekly", "Monthly", "As needed", "Ongoing"])
+            new_owner = c5.selectbox("Owner", owner_options())
+            new_inv = st.checkbox("This is invisible mental work")
+            if st.form_submit_button("Add", type="primary"):
+                if new_name.strip():
+                    state["tasks"].append(_new_task(new_name.strip(), new_cat, new_pts, new_freq, new_inv, new_owner))
+                    save_state_to_disk(state)
+                    st.rerun()
+
+    st.write("")
+
+    # List
+    for t in state["tasks"]:
+        if cat_filter != "All" and t["category"] != cat_filter:
+            continue
+        if search and search.lower() not in t["name"].lower():
+            continue
+
+        with st.container():
+            top = st.columns([6, 2])
+            with top[0]:
+                inv_tag = "<span class='pill'>invisible</span>" if t["invisible"] else ""
+                active_tag = "" if t.get("active_this_week", True) else "<span class='pill' style='background:#F1ECE2;color:#9A8862'>paused this week</span>"
+                st.markdown(
+                    f"<div style='padding-top:0.4rem'>"
+                    f"<div style='font-size:1.02rem;color:{INK}'>{t['name']}</div>"
+                    f"<div class='muted' style='margin-top:2px'>{t['category']} · {t['frequency']} {inv_tag} {active_tag}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            with top[1]:
+                opts = owner_options()
+                idx = opts.index(t["owner"]) if t["owner"] in opts else len(opts) - 1
+                t["owner"] = st.selectbox(
+                    "Owner", opts, index=idx, key=f"own_{t['id']}", label_visibility="collapsed",
+                )
+
+            bot = st.columns([2, 2, 2, 2])
+            t["points"] = bot[0].number_input(
+                "Weight", 1, 10, int(t["points"]),
+                key=f"pts_{t['id']}", label_visibility="collapsed",
+            )
+            t["invisible"] = bot[1].checkbox("Invisible", value=t["invisible"], key=f"inv_{t['id']}")
+            t["active_this_week"] = bot[2].checkbox("This week", value=t.get("active_this_week", True), key=f"act_{t['id']}")
+            if bot[3].button("Remove", key=f"del_{t['id']}"):
+                state["tasks"] = [x for x in state["tasks"] if x["id"] != t["id"]]
+                save_state_to_disk(state)
+                st.rerun()
+
+            st.markdown("<hr style='margin:0.4rem 0 0 0;border:none;border-top:1px solid " + BORDER + "'>", unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------------------
+# Transfer
+# ---------------------------------------------------------------------------
+def render_transfer():
+    st.markdown('<div class="eyebrow">Transfer</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero-headline">Hand a task over.</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="hero-sub">Pick a task, choose who takes it next, and leave a short note so it doesn\'t feel out of nowhere.</div>',
+        unsafe_allow_html=True,
+    )
+
+    df = active_df()
+    if df.empty:
+        st.info("No tasks yet.")
+        return
+
+    with st.form("transfer", clear_on_submit=True):
+        task_map = {f"{t['name']}  ·  with {t['owner']}": t["id"] for t in state["tasks"]}
+        chosen = st.selectbox("Task", list(task_map.keys()))
+        new_owner = st.selectbox("Hand to", owner_options())
+        msg = st.text_area("Note", placeholder="e.g. Could you take this for the next two weeks? Work is heavy right now.")
+        if st.form_submit_button("Transfer", type="primary"):
+            tid = task_map[chosen]
+            old = None
+            for t in state["tasks"]:
+                if t["id"] == tid:
+                    old = t["owner"]
+                    t["owner"] = new_owner
+            state["transfers"].append({
+                "task": chosen.split("  ·  ")[0],
+                "from": old, "to": new_owner, "message": msg,
+                "at": datetime.utcnow().isoformat(),
+            })
+            if msg.strip():
+                state["messages"].append({
+                    "author": old or "System",
+                    "text": f"Transferred '{chosen.split('  ·  ')[0]}' to {new_owner} — {msg}",
+                    "at": datetime.utcnow().isoformat(),
+                })
+            save_state_to_disk(state)
+            st.success("Transferred.")
+
+    if state["transfers"]:
+        st.markdown('<div class="eyebrow" style="margin-top:1.5rem">Recent transfers</div>', unsafe_allow_html=True)
+        for tr in reversed(state["transfers"][-8:]):
+            ts = datetime.fromisoformat(tr["at"]).strftime("%d %b · %H:%M")
+            note = f"<div class='muted' style='margin-top:4px'><i>{tr['message']}</i></div>" if tr["message"] else ""
+            st.markdown(
+                f"<div class='card-quiet'>"
+                f"<div style='color:{INK}'>{tr['task']}</div>"
+                f"<div class='muted' style='margin-top:2px'>{tr['from']} → {tr['to']} · {ts}</div>"
+                f"{note}</div>",
+                unsafe_allow_html=True,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Chat & Appreciation
+# ---------------------------------------------------------------------------
+def render_chat():
+    a = state["partner_a"] or "Partner 1"
+    b = state["partner_b"] or "Partner 2"
+
+    st.markdown('<div class="eyebrow">Talk</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero-headline">A quiet space for the two of you.</div>', unsafe_allow_html=True)
+
+    sub_appr, sub_chat = st.tabs(["Appreciation", "Notes"])
+
+    with sub_appr:
+        st.markdown(
+            f"<div class='muted' style='margin-bottom:0.8rem'>"
+            f"One of the strongest signals of a healthy partnership is regular thanks. "
+            f"Drop a quick note for something specific.</div>",
+            unsafe_allow_html=True,
+        )
+        with st.form("appr", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            frm = c1.selectbox("From", [a, b])
+            to = c2.selectbox("To", [b, a])
+            text = st.text_area("What for?", placeholder="e.g. Thanks for handling bedtime three nights in a row this week.")
+            if st.form_submit_button("Send appreciation", type="primary"):
+                if text.strip():
+                    state["appreciations"].append({
+                        "from": frm, "to": to, "text": text.strip(),
+                        "at": datetime.utcnow().isoformat(),
+                    })
+                    save_state_to_disk(state)
+                    st.rerun()
+
+        if state["appreciations"]:
+            st.write("")
+            for x in reversed(state["appreciations"][-10:]):
+                ts = datetime.fromisoformat(x["at"]).strftime("%d %b")
+                st.markdown(
+                    f"<div class='card-quiet'>"
+                    f"<i style='color:{INK}'>&ldquo;{x['text']}&rdquo;</i>"
+                    f"<div class='muted' style='margin-top:0.4rem'>{x['from']} → {x['to']} · {ts}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+    with sub_chat:
+        with st.form("msg", clear_on_submit=True):
+            author = st.selectbox("From", [a, b], key="msg_author")
+            text = st.text_area("Message", placeholder="Anything you want to flag, plan, or check in about.")
+            if st.form_submit_button("Send", type="primary"):
+                if text.strip():
+                    state["messages"].append({
+                        "author": author, "text": text.strip(),
+                        "at": datetime.utcnow().isoformat(),
+                    })
+                    save_state_to_disk(state)
+                    st.rerun()
+
+        for m in reversed(state["messages"][-30:]):
             ts = datetime.fromisoformat(m["at"]).strftime("%d %b · %H:%M")
             with st.chat_message("user" if m["author"] == a else "assistant"):
-                st.markdown(f"**{m['author']}**  ·  _{ts}_")
+                st.markdown(f"**{m['author']}**  ·  <span class='muted'>{ts}</span>", unsafe_allow_html=True)
                 st.write(m["text"])
 
 
 # ---------------------------------------------------------------------------
-# Tips tab
+# Settings
 # ---------------------------------------------------------------------------
-with tab_tips:
-    st.subheader("How to use Share the Load")
+def render_settings():
+    st.markdown('<div class="eyebrow">Settings</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero-headline">Your household.</div>', unsafe_allow_html=True)
     st.markdown(
-        """
-1. **Set up your household** — add both partners' names in the sidebar.
-2. **Walk through the task list together** — tick the ones you do, add custom ones, and adjust points to reflect how much mental energy each one really takes (1 = trivial, 10 = exhausting).
-3. **Assign owners honestly** — including emotional and invisible tasks like "remembering birthdays" or "checking in emotionally".
-4. **Check the dashboard** — is the split close to 50/50? Are there categories one partner shoulders alone?
-5. **Use Transfer to rebalance** — pick a task, choose the new owner, and leave a short note so your partner knows the context.
-6. **Talk regularly** — use Chat & Notes for quick check-ins. Even a "thanks for handling X this week" goes a long way.
-7. **Save your data** — hit Save in the sidebar (or download the JSON) so your setup persists between sessions.
-
-#### Why points matter
-Not every task carries the same load. "Taking out the bins" (1 pt) is not the same as "Organising the family calendar" (5 pts). Points let you capture invisible labour that often goes unseen.
-
-#### Try a monthly check-in
-Once a month, open Share the Load together, look at the dashboard, and rebalance anything that feels off. Small adjustments early prevent resentment later.
-        """
+        '<div class="hero-sub">Names, week, and data. Everything stays on your device.</div>',
+        unsafe_allow_html=True,
     )
+
+    c1, c2 = st.columns(2)
+    state["partner_a"] = c1.text_input("Partner 1", value=state["partner_a"])
+    state["partner_b"] = c2.text_input("Partner 2", value=state["partner_b"])
+
+    st.write("")
+    st.markdown("##### Weekly rhythm")
+    st.markdown(
+        f"<div class='muted'>Current week starts <b>"
+        f"{datetime.fromisoformat(state['week_start']).strftime('%d %B %Y')}</b>. "
+        "Start a fresh week to mark everything active again.</div>",
+        unsafe_allow_html=True,
+    )
+    if st.button("Start a fresh week"):
+        state["week_start"] = _week_start_iso()
+        for t in state["tasks"]:
+            t["active_this_week"] = True
+        save_state_to_disk(state)
+        st.success("New week started.")
+
+    st.write("")
+    st.markdown("##### Data")
+    c1, c2 = st.columns(2)
+    if c1.button("Save now", use_container_width=True):
+        save_state_to_disk(state)
+        st.success("Saved.")
+    c2.download_button(
+        "Download data",
+        data=json.dumps(state, indent=2),
+        file_name="sharetheload.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+    up = st.file_uploader("Restore from file", type=["json"])
+    if up is not None:
+        try:
+            st.session_state.state = json.loads(up.read().decode("utf-8"))
+            st.success("Restored — refreshing…")
+            st.rerun()
+        except Exception as e:
+            st.error(str(e))
+
+    st.write("")
+    st.markdown("##### Start over")
+    if st.button("Reset to defaults"):
+        s = _empty_state()
+        s["tasks"] = seed_default_tasks()
+        st.session_state.state = s
+        save_state_to_disk(s)
+        st.session_state.onboard_step = 1
+        st.session_state.onboard_task_idx = 0
+        st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Router
+# ---------------------------------------------------------------------------
+if not state.get("onboarded"):
+    render_onboarding()
+else:
+    # Top-level minimal nav
+    tabs = st.tabs(["Home", "Tasks", "Transfer", "Talk", "Settings"])
+    with tabs[0]:
+        render_hero()
+    with tabs[1]:
+        render_tasks()
+    with tabs[2]:
+        render_transfer()
+    with tabs[3]:
+        render_chat()
+    with tabs[4]:
+        render_settings()
